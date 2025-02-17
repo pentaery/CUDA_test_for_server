@@ -48,28 +48,58 @@ void cpu_sgemm(float *A_ptr, float *B_ptr, float *C_ptr, const int M,
   }
 }
 
-
+template <unsigned int BLOCK_SIZE, unsigned int STRIDE>
 __global__ void cuda_sgemm(float *A_ptr, float *B_ptr, float *C_ptr,
                            const int M, const int N, const int K) {
-  const int x = blockIdx.x * blockDim.x + threadIdx.x;
-  const int y = blockIdx.y * blockDim.y + threadIdx.y;
-  float *A_ptr_start = A_ptr + blockIdx.x * blockDim.x * K;
-  float *B_ptr_start = B_ptr + blockIdx.y * blockDim.y;
 
+  float *A_ptr_start = A_ptr + STRIDE * blockIdx.x * blockDim.x * K;
+  float *B_ptr_start = B_ptr + STRIDE * blockIdx.y * blockDim.y;
 
-  __syncthreads();
+  __shared__ float a_shared[BLOCK_SIZE * STRIDE][BLOCK_SIZE * STRIDE];
+  __shared__ float b_shared[BLOCK_SIZE * STRIDE][BLOCK_SIZE * STRIDE];
 
-  float temp = 0.f;
-  for (int k = 0; k < K; ++k) {
-    temp += A_ptr_start[threadIdx.x * K + k] * B_ptr_start[k * N + threadIdx.y];
+  float temp[STRIDE][STRIDE] = {0.f};
+
+  for (int s = 0; s < K; s += blockDim.x * STRIDE) {
+
+    for (int i = 0; i < STRIDE; i++) {
+      for (int j = 0; j < STRIDE; j++) {
+        a_shared[threadIdx.x + i * BLOCK_SIZE][threadIdx.y + j * BLOCK_SIZE] =
+            A_ptr_start[(threadIdx.x + i * BLOCK_SIZE) * K + threadIdx.y + s +
+                        j * BLOCK_SIZE];
+        b_shared[threadIdx.x + i * BLOCK_SIZE][threadIdx.y + j * BLOCK_SIZE] =
+            B_ptr_start[(threadIdx.x + i * BLOCK_SIZE + s) * N + threadIdx.y +
+                        j * BLOCK_SIZE];
+      }
+    }
+    __syncthreads();
+
+    for (int i = 0; i < STRIDE; i++) {
+      for (int j = 0; j < STRIDE; j++) {
+        for (int k = 0; k < BLOCK_SIZE * STRIDE; ++k) {
+          temp[i][j] +=
+              a_shared[threadIdx.x + i * BLOCK_SIZE][k] *
+              b_shared[k][threadIdx.y + j * BLOCK_SIZE];
+        }
+      }
+    }
+    __syncthreads();
   }
-  C_ptr[x * N + y] = temp;
+
+  float *C_ptr_start = C_ptr + (blockIdx.x * blockDim.x * STRIDE) * N +
+                       blockIdx.y * blockDim.y * STRIDE;
+  for (int i = 0; i < STRIDE; i++) {
+    for (int j = 0; j < STRIDE; j++) {
+      C_ptr_start[(threadIdx.x + i * BLOCK_SIZE) * N + threadIdx.y +
+                  j * BLOCK_SIZE] = temp[i][j];
+    }
+  }
 }
 
 int main() {
-  int m = 512;
-  int n = 512;
-  int k = 512;
+  int m = 1024;
+  int n = 1024;
+  int k = 1024;
 
   const size_t mem_size_A = m * k * sizeof(float);
   const size_t mem_size_B = k * n * sizeof(float);
@@ -100,10 +130,11 @@ int main() {
   cpu_sgemm(matrix_A_host, matrix_B_host, matrix_C_host_cpu_calc, m, n, k);
 
   constexpr int BLOCK = 16;
+  constexpr int STRIDE = 4;
   dim3 block(BLOCK, BLOCK);
-  dim3 grid((m + BLOCK - 1) / BLOCK, (n + BLOCK - 1) / BLOCK);
-  cuda_sgemm<<<grid, block>>>(matrix_A_device, matrix_B_device, matrix_C_device,
-                              m, n, k);
+  dim3 grid((m + BLOCK - 1) / BLOCK / STRIDE, (n + BLOCK - 1) / BLOCK / STRIDE);
+  cuda_sgemm<BLOCK, STRIDE><<<grid, block>>>(matrix_A_device, matrix_B_device,
+                                             matrix_C_device, m, n, k);
 
   cudaMemcpy(matrix_C_host_gpu_calc, matrix_C_device, mem_size_C,
              cudaMemcpyDeviceToHost);

@@ -8,7 +8,7 @@
             "name": "CUDA C++: Launch",
             "type": "cuda-gdb",
             "request": "launch",
-            "program": "/home/pentaery/projects/CUDA_test_for_server/build/1_cuda_reduce_study/my_reduce_v8_shuffle"
+            "program": "/home/ET/yjzhou/projects/CUDA_test_for_server/build/2_cuda_sgemm_study/my_sgemm_v4_float4"
         },
         {
             "name": "CUDA C++: Attach",

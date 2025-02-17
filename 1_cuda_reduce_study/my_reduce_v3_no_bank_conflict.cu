@@ -2,6 +2,7 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <stdlib.h>
+#include <chrono>
 
 #define THREAD_PER_BLOCK 256
 
@@ -60,6 +61,8 @@ int main() {
   dim3 Grid(N / THREAD_PER_BLOCK, 1);
   dim3 Block(THREAD_PER_BLOCK, 1);
 
+
+  
   reduce<<<Grid, Block>>>(d_input, d_output);
   cudaMemcpy(output, d_output, block_num * sizeof(float),
              cudaMemcpyDeviceToHost);

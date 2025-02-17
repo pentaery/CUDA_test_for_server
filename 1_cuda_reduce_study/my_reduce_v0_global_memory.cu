@@ -2,6 +2,7 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <stdlib.h>
+#include <chrono>
 
 #define THREAD_PER_BLOCK 256
 
@@ -57,13 +58,22 @@ int main() {
   dim3 Grid(N / THREAD_PER_BLOCK, 1);
   dim3 Block(THREAD_PER_BLOCK, 1);
 
+  auto begin = std::chrono::high_resolution_clock::now();
   reduce<<<Grid, Block>>>(d_input, d_output);
+  auto end = std::chrono::high_resolution_clock::now();
+  auto elapsed =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin);
+
+  printf("Time measured: %.7f seconds.\n", elapsed.count() * 1e-9);
+
   cudaMemcpy(output, d_output, block_num * sizeof(float),
              cudaMemcpyDeviceToHost);
 
+
   if (check(output, result, block_num)) {
     printf("Success\n");
-  } else {
+  }
+  else {
     printf("Failed\n");
     for (int i = 0; i < block_num; ++i) {
       printf("%lf\n", output[i] - result[i]);
