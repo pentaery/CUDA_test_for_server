@@ -54,15 +54,23 @@ template <unsigned int M_NUM_PER_BLOCK, unsigned int N_NUM_PER_BLOCK,
           unsigned int K_NUM_PER_BLOCK, unsigned int NUM_PER_THREAD>
 __global__ void cuda_sgemm(float *A_ptr, float *B_ptr, float *C_ptr,
                            const int M, const int N, const int K) {
+
+  int tid = threadIdx.y * blockDim.x + threadIdx.x;
+  int ctx = tid % 16;
+  int cty = tid / 16;
   
   float *A_ptr_start = A_ptr + blockIdx.y * M_NUM_PER_BLOCK * K;
   float *B_ptr_start = B_ptr + blockIdx.x * N_NUM_PER_BLOCK;
 
   __shared__ float a_shared[M_NUM_PER_BLOCK][K_NUM_PER_BLOCK];
   __shared__ float b_shared[K_NUM_PER_BLOCK][N_NUM_PER_BLOCK];
-  float temp[NUM_PER_THREAD] = {0.f};
 
-  for (int s = 0; s < K; s += K_NUM_PER_BLOCK) { 
+  constexpr int REG_NUM = NUM_PER_THREAD / 2;
+  float a_reg[REG_NUM] = {0.f};
+  float b_reg[REG_NUM] = {0.f};
+  float temp[REG_NUM][REG_NUM] = {0.f};
+
+  for (int s = 0; s < K; s += K_NUM_PER_BLOCK) {
     FETCH_FLOAT4(a_shared[threadIdx.y][threadIdx.x * NUM_PER_THREAD]) =
         FETCH_FLOAT4(
             A_ptr_start[K * threadIdx.y + s + threadIdx.x * NUM_PER_THREAD]);
@@ -71,22 +79,29 @@ __global__ void cuda_sgemm(float *A_ptr, float *B_ptr, float *C_ptr,
             B_ptr_start[N * (s + threadIdx.y) + threadIdx.x * NUM_PER_THREAD]);
     __syncthreads();
 
-    for (int i = 0; i < NUM_PER_THREAD; ++i) {
-      for (int k = 0; k < K_NUM_PER_BLOCK; ++k) {
-        temp[i] += a_shared[threadIdx.y][k] *
-                   b_shared[k][threadIdx.x * NUM_PER_THREAD + i];
+    for (int k = 0; k < K_NUM_PER_BLOCK; ++k) {
+      a_reg[0] = a_shared[cty * 2][k];
+      a_reg[1] = a_shared[cty * 2 + 1][k];
+      b_reg[0] = b_shared[k][ctx * 2];
+      b_reg[1] = b_shared[k][ctx * 2 + 1];
+
+      for (int i = 0; i < REG_NUM; ++i) {
+        for(int j = 0; j < REG_NUM; ++j) {
+          temp[i][j] += a_reg[i] * b_reg[j];
+        }
       }
     }
+
     __syncthreads();
   }
 
   float *C_ptr_start =
       C_ptr + N * blockIdx.y * M_NUM_PER_BLOCK + blockIdx.x * N_NUM_PER_BLOCK;
-  for (int i = 0; i < NUM_PER_THREAD; ++i) {
-    C_ptr_start[N * threadIdx.y + threadIdx.x * NUM_PER_THREAD + i] = temp[i];
+  for (int i = 0; i < REG_NUM; ++i) {
+    for ( int j = 0; j < REG_NUM; ++j) {
+      C_ptr_start[N * (cty * 2 + i) + ctx * 2 + j] = temp[i][j];
+    }
   }
-
-  
 }
 
 int main() {

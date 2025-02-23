@@ -51,42 +51,63 @@ void cpu_sgemm(float *A_ptr, float *B_ptr, float *C_ptr, const int M,
 }
 
 template <unsigned int M_NUM_PER_BLOCK, unsigned int N_NUM_PER_BLOCK,
-          unsigned int K_NUM_PER_BLOCK, unsigned int NUM_PER_THREAD>
+          unsigned int K_NUM_PER_BLOCK, unsigned int M_NUM_PER_THREAD,
+          unsigned int N_NUM_PER_THREAD, unsigned int K_NUM_PER_THREAD>
 __global__ void cuda_sgemm(float *A_ptr, float *B_ptr, float *C_ptr,
                            const int M, const int N, const int K) {
-  
+
   float *A_ptr_start = A_ptr + blockIdx.y * M_NUM_PER_BLOCK * K;
   float *B_ptr_start = B_ptr + blockIdx.x * N_NUM_PER_BLOCK;
 
   __shared__ float a_shared[M_NUM_PER_BLOCK][K_NUM_PER_BLOCK];
   __shared__ float b_shared[K_NUM_PER_BLOCK][N_NUM_PER_BLOCK];
-  float temp[NUM_PER_THREAD] = {0.f};
 
-  for (int s = 0; s < K; s += K_NUM_PER_BLOCK) { 
-    FETCH_FLOAT4(a_shared[threadIdx.y][threadIdx.x * NUM_PER_THREAD]) =
-        FETCH_FLOAT4(
-            A_ptr_start[K * threadIdx.y + s + threadIdx.x * NUM_PER_THREAD]);
-    FETCH_FLOAT4(b_shared[threadIdx.y][threadIdx.x * NUM_PER_THREAD]) =
-        FETCH_FLOAT4(
-            B_ptr_start[N * (s + threadIdx.y) + threadIdx.x * NUM_PER_THREAD]);
+  float a_reg[M_NUM_PER_THREAD] = {0.f};
+  float b_reg[N_NUM_PER_THREAD] = {0.f};
+  float temp[M_NUM_PER_THREAD][N_NUM_PER_THREAD] = {0.f};
+
+  for (int s = 0; s < K; s += K_NUM_PER_BLOCK) {
+    for (int i = 0; i < M_NUM_PER_THREAD; ++i) {
+      FETCH_FLOAT4(a_shared[threadIdx.y * M_NUM_PER_THREAD + i]
+                           [threadIdx.x * K_NUM_PER_THREAD]) =
+          FETCH_FLOAT4(A_ptr_start[K * (M_NUM_PER_THREAD * threadIdx.y + i) +
+                                   threadIdx.x * K_NUM_PER_THREAD + s]);
+    }
+
+    for (int i = 0; i < K_NUM_PER_THREAD; ++i) {
+      FETCH_FLOAT4(b_shared[threadIdx.y * K_NUM_PER_THREAD + i]
+                           [threadIdx.x * N_NUM_PER_THREAD]) =
+          FETCH_FLOAT4(
+              B_ptr_start[N * (s + threadIdx.y * K_NUM_PER_THREAD + i) +
+                          threadIdx.x * N_NUM_PER_THREAD]);
+    }
+
     __syncthreads();
 
-    for (int i = 0; i < NUM_PER_THREAD; ++i) {
-      for (int k = 0; k < K_NUM_PER_BLOCK; ++k) {
-        temp[i] += a_shared[threadIdx.y][k] *
-                   b_shared[k][threadIdx.x * NUM_PER_THREAD + i];
+    for (int k = 0; k < K_NUM_PER_BLOCK; ++k) {
+      for (int i = 0; i < M_NUM_PER_THREAD; ++i) {
+        a_reg[i] = a_shared[threadIdx.y * M_NUM_PER_THREAD + i][k];
+      }
+      FETCH_FLOAT4(b_reg[0]) =
+          FETCH_FLOAT4(b_shared[k][threadIdx.x * N_NUM_PER_THREAD]);
+
+      for (int i = 0; i < M_NUM_PER_THREAD; ++i) {
+        for (int j = 0; j < N_NUM_PER_THREAD; ++j) {
+          temp[i][j] += a_reg[i] * b_reg[j];
+        }
       }
     }
+
     __syncthreads();
   }
 
   float *C_ptr_start =
       C_ptr + N * blockIdx.y * M_NUM_PER_BLOCK + blockIdx.x * N_NUM_PER_BLOCK;
-  for (int i = 0; i < NUM_PER_THREAD; ++i) {
-    C_ptr_start[N * threadIdx.y + threadIdx.x * NUM_PER_THREAD + i] = temp[i];
+  for (int i = 0; i < M_NUM_PER_THREAD; ++i) {
+    for (int j = 0; j < N_NUM_PER_THREAD; ++j) {
+      FETCH_FLOAT4(C_ptr_start[N * (threadIdx.y * M_NUM_PER_THREAD + i) + threadIdx.x * N_NUM_PER_THREAD]) = FETCH_FLOAT4(temp[i][0]);
+    }
   }
-
-  
 }
 
 int main() {
@@ -122,15 +143,18 @@ int main() {
 
   cpu_sgemm(matrix_A_host, matrix_B_host, matrix_C_host_cpu_calc, m, n, k);
 
-  constexpr int M_NUM_PER_BLOCK = 32;
-  constexpr int N_NUM_PER_BLOCK = 32;
-  constexpr int K_NUM_PER_BLOCK = 32;
-  constexpr int NUM_PER_THREAD = 4;
+  constexpr int M_NUM_PER_BLOCK = 64;
+  constexpr int N_NUM_PER_BLOCK = 64;
+  constexpr int K_NUM_PER_BLOCK = 64;
+  constexpr int M_NUM_PER_THREAD = 4;
+  constexpr int N_NUM_PER_THREAD = 4;
+  constexpr int K_NUM_PER_THREAD = 4;
 
-  dim3 block(8, 32);
+  dim3 block(16, 16);
   dim3 grid(n / N_NUM_PER_BLOCK, m / M_NUM_PER_BLOCK);
 
-  cuda_sgemm<M_NUM_PER_BLOCK, N_NUM_PER_BLOCK, K_NUM_PER_BLOCK, NUM_PER_THREAD>
+  cuda_sgemm<M_NUM_PER_BLOCK, N_NUM_PER_BLOCK, K_NUM_PER_BLOCK,
+             M_NUM_PER_THREAD, N_NUM_PER_THREAD, K_NUM_PER_THREAD>
       <<<grid, block>>>(matrix_A_device, matrix_B_device, matrix_C_device, m, n,
                         k);
 
