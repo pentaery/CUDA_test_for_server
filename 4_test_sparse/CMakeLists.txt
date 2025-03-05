@@ -1,0 +1,7 @@
+add_executable(test test.cu)
+target_link_libraries(test PRIVATE CUDA::cudart ${CUDA_cublas_LIBRARY})
+target_link_libraries(test PRIVATE CUDA::cusparse)
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_compile_options(test PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-G>)
+endif()
+target_compile_options(test PRIVATE -lineinfo)
